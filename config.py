@@ -16,7 +16,7 @@ load_dotenv()
 # =============================================
 
 # MiniMax API Key（必需）
-MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "sk-cp-FZ0T3PMD3ClgnoFrk-jd5b9IpD5MTr9oE6pssiQMrvVAIJ73NMIidHQx1yjHkc4EnRRtBAV7FUEGRMw12zzkwv_raUDELJoga_yf7BDRD6902MtGXlQst-8")
+MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
 
 # MiniMax API 基础地址
 MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
@@ -113,6 +113,29 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(10 * 1024 * 1024)))  # 10MB
 
 
 # =============================================
+<<<<<<< HEAD
+=======
+# LangSmith 配置（用于调试追踪）
+# =============================================
+
+# 是否启用 LangSmith 追踪
+LANGSMITH_TRACING = os.getenv("LANGSMITH_TRACING", "false").lower() == "true"
+
+# LangSmith API Key（从 https://smith.langchain.com 获取）
+LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY", "")
+
+# LangSmith Project 名称
+LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "family-agent")
+
+# 启用 LangSmith 追踪
+if LANGSMITH_TRACING and LANGSMITH_API_KEY:
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGSMITH_API_KEY"] = LANGSMITH_API_KEY
+    os.environ["LANGSMITH_PROJECT"] = LANGSMITH_PROJECT
+
+
+# =============================================
+>>>>>>> fbb280c (fix: remove hardcoded secrets from config.py)
 # 验证配置
 # =============================================
 
