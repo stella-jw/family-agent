@@ -51,6 +51,68 @@ CHROMA_COLLECTION_NAME = "family_knowledge"
 
 
 # =============================================
+# REST API 服务器配置
+# =============================================
+
+# API 服务器地址
+API_HOST = os.getenv("API_HOST", "0.0.0.0")
+
+# API 服务器端口
+API_PORT = int(os.getenv("API_PORT", "8000"))
+
+# CORS 允许的 origins（逗号分隔）
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+
+# API 密钥（可选，用于简单认证）
+API_KEY = os.getenv("API_KEY", "")
+
+
+# =============================================
+# 视觉模型配置（用于图片识别）
+# =============================================
+
+# 视觉模型类型：minimax_vl / openai_vision
+VISION_MODEL_TYPE = os.getenv("VISION_MODEL_TYPE", "minimax_vl")
+
+# MiniMax 视觉模型名称
+MINIMAX_VISION_MODEL = os.getenv("MINIMAX_VISION_MODEL", "Minimaxvision-v2")
+
+# OpenAI 视觉模型名称（如使用）
+OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o")
+
+# 图片最大尺寸（像素，最长边）
+IMAGE_MAX_SIZE = int(os.getenv("IMAGE_MAX_SIZE", "2048"))
+
+
+# =============================================
+# STT 语音识别配置
+# =============================================
+
+# STT 服务类型：minimax_stt / whisper
+STT_SERVICE_TYPE = os.getenv("STT_SERVICE_TYPE", "minimax_stt")
+
+# MiniMax T2A API（语音合成）的 URL
+MINIMAX_STT_URL = os.getenv("MINIMAX_STT_URL", "https://api.minimaxi.com/v1")
+
+# Whisper API URL（如使用）
+WHISPER_API_URL = os.getenv("WHISPER_API_URL", "https://api.openai.com/v1/audio/transcriptions")
+
+# 音频最大时长（秒）
+AUDIO_MAX_DURATION = int(os.getenv("AUDIO_MAX_DURATION", "30"))
+
+
+# =============================================
+# 文件导入配置
+# =============================================
+
+# 允许的文件类型
+ALLOWED_FILE_TYPES = [".json", ".csv", ".txt"]
+
+# 文件最大大小（字节）
+MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(10 * 1024 * 1024)))  # 10MB
+
+
+# =============================================
 # 验证配置
 # =============================================
 

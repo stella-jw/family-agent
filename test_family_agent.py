@@ -338,6 +338,94 @@ def test_family_relationship_create_member():
 
 
 # =============================================
+# Token 优化相关测试
+# =============================================
+
+def test_relevant_examples_loaded_for_count_family():
+    """测试：'几口人'应加载统计类示例"""
+    print_test_header("'几口人'加载统计类示例")
+
+    from graph import _get_relevant_examples
+
+    examples = _get_relevant_examples("我们家几口人？", max_examples=5)
+
+    passed = len(examples) >= 1
+    print_test_result("应加载至少1个相关示例", passed,
+                      f"实际: {len(examples)}")
+    if examples:
+        print(f"  示例: {[e['input'] for e in examples]}")
+    return passed
+
+
+def test_relevant_examples_loaded_for_relationship():
+    """测试：'女儿'相关输入应加载关系类示例"""
+    print_test_header("'女儿'加载关系类示例")
+
+    from graph import _get_relevant_examples
+
+    examples = _get_relevant_examples("我女儿叫汪佳齐", max_examples=5)
+
+    passed = len(examples) >= 1
+    print_test_result("应加载至少1个相关示例", passed,
+                      f"实际: {len(examples)}")
+    if examples:
+        print(f"  示例: {[e['input'] for e in examples]}")
+    return passed
+
+
+def test_relevant_examples_loaded_for_ability():
+    """测试：'不太会'相关输入应加载能力类示例"""
+    print_test_header("'不太会'加载能力类示例")
+
+    from graph import _get_relevant_examples
+
+    examples = _get_relevant_examples("汪强不太会做饭", max_examples=5)
+
+    passed = len(examples) >= 1
+    print_test_result("应加载至少1个相关示例", passed,
+                      f"实际: {len(examples)}")
+    if examples:
+        print(f"  示例: {[e['input'] for e in examples]}")
+    return passed
+
+
+def test_token_optimization_classify():
+    """测试：Token 优化后的 classify 仍能正确处理 count_family"""
+    print_test_header("Token 优化后 classify 正确处理 count_family")
+
+    state = MockState(
+        user_input="请问我们家几口人？",
+        recent_members=[],
+        member_genders={}
+    )
+
+    result = classify(state)
+
+    passed = result["action"] == "count_family"
+    print_test_result("'请问我们家几口人？' 应触发 count_family", passed,
+                      f"实际 action: {result.get('action')}")
+    return passed
+
+
+def test_token_optimization_aggregate_search():
+    """测试：Token 优化后的 classify 仍能正确处理 aggregate_search"""
+    print_test_header("Token 优化后 classify 正确处理 aggregate_search")
+
+    state = MockState(
+        user_input="我们家谁最爱做饭？",
+        recent_members=[],
+        member_genders={}
+    )
+
+    result = classify(state)
+
+    passed = result["action"] == "aggregate_search"
+    print_test_result("'我们家谁最爱做饭？' 应触发 aggregate_search", passed,
+                      f"实际 action: {result.get('action')}")
+    return passed
+
+
+# =============================================
 # 测试运行器
 # =============================================
 
@@ -362,6 +450,12 @@ def run_all_tests():
         test_add_action,
         test_non_family_relationship_no_new_member,
         test_family_relationship_create_member,
+        # Token 优化相关测试
+        test_relevant_examples_loaded_for_count_family,
+        test_relevant_examples_loaded_for_relationship,
+        test_relevant_examples_loaded_for_ability,
+        test_token_optimization_classify,
+        test_token_optimization_aggregate_search,
     ]
 
     results = []

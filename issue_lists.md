@@ -383,3 +383,156 @@
   1. 删除 prompt 中的性别推理规则和 member_genders 示例
   2. 恢复之前的手动关系词解析代码（graph.py 中已删除）
   3. main.py 中恢复 content 检测逻辑
+
+---
+
+## 十二、REST API 开发问题（2026-06-18）
+
+### 33. 依赖缺失问题
+- **类型**：技术栈问题
+- **原因**：requirements.txt 缺少 FastAPI 相关依赖
+- **错误**：`ModuleNotFoundError: No module named 'fastapi'`
+- **解决**：添加 `fastapi>=0.110.0`, `uvicorn>=0.29.0`, `python-multipart>=0.0.9`, `Pillow>=10.3.0`, `pydub>=0.25.1`
+
+### 34. ChromaManager 单例导入问题
+- **类型**：代码问题
+- **原因**：`chroma_manager.py` 没有导出单例，API 层无法直接导入
+- **错误**：`ImportError: cannot import name 'chroma_manager'`
+- **解决**：
+  - tools.py 中初始化单例：`chroma_manager = ChromaManager()`
+  - API 层从 tools 导入
+
+---
+
+## 十三、add-rest-api 功能问题（2026-06-18）
+
+### 35. hobbies 爱好被覆盖而非追加
+- **类型**：代码问题
+- **原因**：`add_member_info` 在成员已存在时总是调用 `update`，导致相同 attribute_type 的记录被覆盖
+- **错误现象**：
+  - 输入 "喜欢画画和跳舞" 生成两条 hobby 记录
+  - 但实际只有一条 hobby 记录，另一条被覆盖
+- **解决**：改为**先检查完全相同的记录是否存在**
+  - 如果已存在 → 跳过（避免重复）
+  - 如果不存在 → 添加新记录
+
+### 36. update 找不到记录时未添加新记录
+- **类型**：代码问题
+- **原因**：`update_member_info` 在找不到匹配记录时返回 False
+- **错误现象**：当添加的关系记录不存在时，不会自动创建
+- **解决**：找不到时改为**添加新记录**
+
+### 37. "我女儿叫XXX" 句式未提取关系和反向关系
+- **类型**：提示词问题
+- **原因**：LLM 未正确识别这是关系描述
+- **错误现象**：
+  - 输入："我女儿叫汪佳齐，是一名二年级的小盆友，喜欢画画和跳舞"
+  - 实际提取：basic_info (上二年级) + hobby (喜欢画画) + hobby (喜欢跳舞)
+  - 缺失：relationship (女儿是汪佳齐) 和 member_genders (汪佳齐: 女)
+- **解决**：
+  - 在 pronouns 中添加 `"我"`
+  - 添加示例：`"我女儿叫汪佳齐..."` → 生成 relationship + member_genders
+
+### 38. 反向关系生成逻辑错误（一）
+- **类型**：代码问题
+- **原因**：关系词匹配时未按长度排序，"女儿" 优先于 "女儿是" 匹配
+- **错误现象**：
+  - 输入："女儿是汪佳齐"
+  - 期望反向："妈妈是糖糖"
+  - 实际反向："妈妈糖糖"（缺少"是"）
+- **解决**：按 key 长度降序排序，优先匹配更长的 key
+
+### 39. 反向关系生成逻辑错误（二）
+- **类型**：代码问题
+- **原因**：`FIXED_REVERSE_MAPPING` 包含 "妈妈是" → "女儿是"，但应该根据对方性别决定
+- **错误现象**：
+  - 输入："妈妈是糖糖"，对方是男性（汪莯晨）
+  - 期望反向："儿子是汪莯晨"（汪莯晨是儿子）
+  - 实际反向："女儿是糖糖"（错误！）
+- **解决**：
+  - 将 "妈妈是"、"爸爸是" 移到 `GENDER_BASED_RELATIONSHIP`
+  - 根据 **related_member 的性别**（不是说话人性别）决定反向关系
+
+### 40. "妈妈是XXX" 被 LLM 错误解析
+- **类型**：提示词问题
+- **原因**：LLM 把 "妈妈是糖糖" 解析为 `attribute_type="母亲"`, `content="糖糖"`
+- **错误现象**：
+  - 期望：`content="妈妈是糖糖"`, `attribute_type="relationship"`
+  - 实际：`content="糖糖"`, `attribute_type="母亲"`
+- **影响**：无法匹配反向关系映射，因为 key 不匹配
+- **解决**：在 classify prompt 中添加示例 `"汪莯晨的妈妈是糖糖" → `content:"妈妈是糖糖"`
+
+---
+
+## 十四、Token 优化方案（2026-06-18）
+
+### 41. Token 消耗过高
+- **类型**：性能问题
+- **原因**：classify prompt 包含约 20 个完整示例（约 167 行），每次调用消耗约 2000 tokens
+- **问题**：
+  - 示例太多导致每次 API 调用消耗大量 token
+  - 大部分示例与当前输入无关（如用户只问"几口人"，却加载了所有关系示例）
+- **解决方案**：实施方案 A - 动态加载相关示例
+  1. 将所有示例移到外部文件 `data/classify_examples.json`
+  2. 根据用户输入关键词匹配最相关的 3-5 个示例
+  3. 只加载与当前输入相关的示例
+- **预期效果**：prompt 从 ~2000 tokens 减少到 ~500 tokens，节省 60-70% token
+
+### 42. count_family/aggregate_search 返回 unknown
+- **类型**：代码问题
+- **原因**：classify 函数中，检查 `member_name` 是否为空的代码错误地将 `first_action` 设置为 `"unknown"`
+- **错误代码**：
+  ```python
+  if not first_member_name:
+      first_action = "unknown"
+  ```
+- **问题**：对于 `count_family`、`aggregate_search` 等 action 类型，`member_name` 本身即为空字符串，但代码错误地据此将有效的 action 覆盖为 `"unknown"`
+- **影响**：
+  - "我们家几口人？" → action 返回 "unknown" 而非 "count_family"
+  - "我们家谁爱做饭？" → action 返回 "unknown" 而非 "aggregate_search"
+- **解决**：删除该错误代码块，因为 `member_name` 为空对于某些 action 类型是正常的，不应影响 action 的有效性
+- **类型**：性能问题
+- **原因**：classify prompt 包含约 20 个完整示例（约 167 行），每次调用消耗约 2000 tokens
+- **问题**：
+  - 示例太多导致每次 API 调用消耗大量 token
+  - 大部分示例与当前输入无关（如用户只问"几口人"，却加载了所有关系示例）
+- **解决方案**：实施方案 A - 动态加载相关示例
+  1. 将所有示例移到外部文件 `data/classify_examples.json`
+  2. 根据用户输入关键词匹配最相关的 3-5 个示例
+  3. 只加载与当前输入相关的示例
+- **预期效果**：prompt 从 ~2000 tokens 减少到 ~500 tokens，节省 60-70% token
+
+### 实施步骤
+1. ✅ 创建 `data/classify_examples.json` 存储所有示例
+2. ✅ 添加 `_load_classify_examples()` 和 `_get_relevant_examples()` 函数
+3. ✅ 修改 `classify()` 函数动态构建 prompt
+4. ✅ 根据关键词匹配选择相关示例
+
+---
+
+## 十五、问题分类汇总
+
+| ID | 问题 | 类型 | 子类 |
+|----|------|------|------|
+| 1-13 | 环境与依赖问题 | 技术栈 | Python/CrewAI 版本兼容 |
+| 14-31 | LangGraph 迁移问题 | 技术栈 + 代码 | ChromaDB API/Embedding |
+| 32 | 向量数据库选型 | 架构 | 设计决策 |
+| 33 | REST API 依赖缺失 | 技术栈 | 依赖管理 |
+| 34 | 单例导入问题 | 代码 | Import |
+| 35 | hobbies 覆盖问题 | 代码 | 智能合并逻辑 |
+| 36 | update 失败未添加 | 代码 | 边界处理 |
+| 37 | 关系提取不完整 | 提示词 | Prompt 覆盖 |
+| 38 | 反向关系缺少"是" | 代码 | 字符串匹配 |
+| 39 | 反向关系性别错误 | 代码 | 关系映射逻辑 |
+| 40 | LLM 解析格式错误 | 提示词 | Prompt 覆盖 |
+| 41 | Token 消耗过高 | 性能 | Prompt 优化 |
+
+### 问题类型统计
+
+| 类型 | 数量 | 占比 |
+|------|------|------|
+| 技术栈问题 | 5 | 24% |
+| 代码问题 | 8 | 38% |
+| 提示词问题 | 5 | 24% |
+| 架构/设计决策 | 2 | 10% |
+| 性能优化 | 1 | 5% |

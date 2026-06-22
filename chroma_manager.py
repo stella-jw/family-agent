@@ -130,7 +130,90 @@ class ChromaManager:
         metadata: Optional[dict] = None
     ) -> str:
         """
-        添加家庭成员信息到知识库
+        添加家庭成员信息到知识库（智能合并）
+
+        逻辑：
+        1. 如果成员不存在，添加新记录
+        2. 如果成员已存在，先检查是否已存在完全相同的记录
+           - 如果已存在，跳过（避免重复）
+           - 如果不存在，添加新记录
+        """
+        all_members = self.get_all_members()
+
+        if member_name in all_members:
+            # 成员已存在，检查是否已有相同的记录
+            existing = self._find_record(member_name, attribute_type, content)
+            if existing:
+                print(f"[ChromaManager] 记录已存在，跳过: {member_name} - {attribute_type}")
+                return "skipped"
+            else:
+                # 不存在相同记录，添加新记录
+                record_id = str(uuid.uuid4())
+                meta = {
+                    "member_name": member_name,
+                    "attribute_type": attribute_type,
+                    "content": content,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                if metadata:
+                    meta.update(metadata)
+                self.collection.add(
+                    ids=[record_id],
+                    documents=[content],
+                    metadatas=[meta]
+                )
+                print(f"[ChromaManager] 新增记录: {member_name} - {attribute_type}")
+                return "added"
+        else:
+            # 成员不存在，添加新记录
+            record_id = str(uuid.uuid4())
+
+            meta = {
+                "member_name": member_name,
+                "attribute_type": attribute_type,
+                "content": content,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+
+            if metadata:
+                meta.update(metadata)
+
+            self.collection.add(
+                ids=[record_id],
+                documents=[content],
+                metadatas=[meta]
+            )
+
+            print(f"[ChromaManager] 新增记录: {member_name} - {attribute_type}")
+            return "added"
+
+    def _find_record(self, member_name: str, attribute_type: str, content: str) -> bool:
+        """检查是否存在完全相同的记录"""
+        def make_eq_clause(field, value):
+            return {field: {"$eq": value}}
+
+        where_clause = {
+            "$and": [
+                make_eq_clause("member_name", member_name),
+                make_eq_clause("attribute_type", attribute_type),
+                make_eq_clause("content", content)
+            ]
+        }
+        results = self.collection.get(where=where_clause)
+        return len(results["ids"]) > 0
+
+    def add_member_info_simple(
+        self,
+        member_name: str,
+        attribute_type: str,
+        content: str,
+        metadata: Optional[dict] = None
+    ) -> str:
+        """
+        添加家庭成员信息到知识库（简单模式，不检查是否存在）
+
+        Returns:
+            str: record_id
         """
         record_id = str(uuid.uuid4())
 
@@ -201,12 +284,15 @@ class ChromaManager:
                 results["ids"] = filtered_ids
 
         if not results["ids"]:
-            print(f"[ChromaManager] 未找到要更新的记录")
-            return False
+            print(f"[ChromaManager] 未找到要更新的记录，为 {member_name} 添加新记录")
+            # 找不到要更新的记录时，添加新记录
+            self.add_member_info_simple(member_name, attribute_type, new_content)
+            return True
 
         # 删除旧记录，添加新内容
         self.collection.delete(ids=results["ids"])
-        self.add_member_info(member_name, attribute_type, new_content)
+        self.add_member_info_simple(member_name, attribute_type, new_content)
+        return True
 
         print(f"[ChromaManager] 更新记录: {member_name} - {attribute_type}")
         return True

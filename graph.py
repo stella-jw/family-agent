@@ -8,6 +8,7 @@ START → classify → [add/update/search/profile] → respond → END
 """
 
 import json
+import os
 from typing import TypedDict
 
 from langchain_openai import ChatOpenAI
@@ -21,6 +22,72 @@ from tools import (
     get_member_all_info,
     chroma_manager,
 )
+
+
+# =============================================
+# 示例加载器（用于 Token 优化）
+# =============================================
+
+def _load_classify_examples() -> dict:
+    """加载外部示例文件"""
+    examples_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "data", "classify_examples.json"
+    )
+    if os.path.exists(examples_path):
+        with open(examples_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"examples": [], "keywords": {}}
+
+
+def _get_relevant_examples(user_input: str, max_examples: int = 5) -> list:
+    """
+    根据用户输入关键词选择最相关的示例
+    只返回与当前输入相关的示例，减少 token 消耗
+    """
+    examples_data = _load_classify_examples()
+    examples = examples_data.get("examples", [])
+    keywords_map = examples_data.get("keywords", {})
+
+    if not examples:
+        return []
+
+    # 收集匹配的关键词及其模式
+    matched = []  # list of (keyword, matched_patterns)
+    for keyword, patterns in keywords_map.items():
+        matched_patterns = [p for p in patterns if p in user_input]
+        if matched_patterns:
+            matched.append((keyword, matched_patterns))
+
+    # 如果没有匹配关键词，返回少量基础示例
+    if not matched:
+        # 返回包含关系和基本信息的示例
+        relevant = [e for e in examples if "relationship" in str(e) or "member_name" in str(e)][:3]
+        return relevant if relevant else examples[:2]
+
+    # 选择包含匹配模式的示例
+    relevant_examples = []
+    for example in examples:
+        example_str = json.dumps(example, ensure_ascii=False)
+        for keyword, patterns in matched:
+            for pattern in patterns:
+                if pattern in example_str:
+                    relevant_examples.append(example)
+                    break
+            else:
+                continue
+            break
+
+    # 去重并限制数量
+    seen = set()
+    unique = []
+    for e in relevant_examples:
+        e_str = json.dumps(e, ensure_ascii=False)
+        if e_str not in seen:
+            seen.add(e_str)
+            unique.append(e)
+
+    return unique[:max_examples]
 
 
 # =============================================
@@ -69,6 +136,15 @@ def classify(state: FamilyAgentState) -> FamilyAgentState:
     if recent_members:
         members_context = f"\n最近提到的成员：{', '.join(recent_members)}\n注意：如果用户输入中提到代词（她/他/它），应关联到上述成员。\n"
 
+    # 加载相关示例（Token 优化：只加载与输入相关的示例）
+    relevant_examples = _get_relevant_examples(user_input, max_examples=5)
+    examples_section = ""
+    if relevant_examples:
+        examples_lines = []
+        for ex in relevant_examples:
+            examples_lines.append(f'- "{ex["input"]}" → {json.dumps(ex["output"], ensure_ascii=False)}')
+        examples_section = "\n\n参考示例：\n" + "\n".join(examples_lines)
+
     prompt = f"""你是一个家庭信息录入助手。请分析用户输入，提取结构化信息。
 {members_context}
 用户输入：{user_input}
@@ -90,8 +166,8 @@ def classify(state: FamilyAgentState) -> FamilyAgentState:
    - "X的妻子是Y" → member_genders["X"]="男", member_genders["Y"]="女"
    - "X的爸爸是Y" → member_genders["Y"]="男"（X是孩子，性别未知）
    - "X的妈妈是Y" → member_genders["Y"]="女"（X是孩子，性别未知）
-   - "X的儿子是Y" → member_genders["Y"]="男"
-   - "X的女儿是Y" → member_genders["Y"]="女"
+   - "X的儿子是Y" → member_genders["Y"]="男"（仅推断Y的性别，X的性别无法从本句推断）
+   - "X的女儿是Y" → member_genders["Y"]="女"（仅推断Y的性别，X的性别无法从本句推断）
    - "X的爷爷是Y" 或 "X的外公是Y" → member_genders["Y"]="男"
    - "X的奶奶是Y" 或 "X的外婆是Y" → member_genders["Y"]="女"
 
@@ -125,41 +201,13 @@ attribute_type取值：
 
 **非家庭成员关系词（只存储关系，不录入另一方）**：
 好朋友、朋友、同学、同事、老师、学生、邻居、亲戚等
-
-示例：
-- "我叫糖糖，今年37岁" → {{"records":[{{"action":"add", "member_name":"糖糖", "attribute_type":"basic_info", "content":"年龄37岁", "related_member_name":""}}], "member_genders":{{"糖糖":"女"}}}}
-- "她37岁，出生于1988年11月" → {{"records":[{{"action":"add", "member_name":"糖糖", "attribute_type":"basic_info", "content":"年龄37岁", "related_member_name":""}}, {{"action":"add", "member_name":"糖糖", "attribute_type":"basic_info", "content":"出生于1988年11月", "related_member_name":""}}], "member_genders":{{"糖糖":"女"}}}}
-- "汪佳齐上二年级，喜欢画画" → {{"records":[{{"action":"add", "member_name":"汪佳齐", "attribute_type":"basic_info", "content":"上二年级", "related_member_name":""}}, {{"action":"add", "member_name":"汪佳齐", "attribute_type":"hobby", "content":"喜欢画画", "related_member_name":""}}], "member_genders":{{}}}}
-- "她今年38岁，出生于1988年11月，职业是软件测试工程师，老公是汪强" → {{
-  "records":[
-    {{"action":"add", "member_name":"糖糖", "attribute_type":"basic_info", "content":"年龄38岁", "related_member_name":""}},
-    {{"action":"add", "member_name":"糖糖", "attribute_type":"basic_info", "content":"出生于1988年11月", "related_member_name":""}},
-    {{"action":"add", "member_name":"糖糖", "attribute_type":"basic_info", "content":"职业是软件测试工程师", "related_member_name":""}},
-    {{"action":"add", "member_name":"糖糖", "attribute_type":"relationship", "content":"老公是汪强", "related_member_name":"汪强"}}
-  ],
-  "member_genders":{{"糖糖":"女", "汪强":"男"}}
-}}
-- "她老公是汪强" → {{"records":[{{"action":"add", "member_name":"糖糖", "attribute_type":"relationship", "content":"老公是汪强", "related_member_name":"汪强"}}], "member_genders":{{"糖糖":"女", "汪强":"男"}}}}
-- "汪佳齐的爸爸是汪强" → {{"records":[{{"action":"add", "member_name":"汪佳齐", "attribute_type":"relationship", "content":"爸爸是汪强", "related_member_name":"汪强"}}], "member_genders":{{"汪强":"男"}}}}
-- "糖糖的好朋友是张丽" → {{"records":[{{"action":"add", "member_name":"糖糖", "attribute_type":"relationship", "content":"好朋友是张丽", "related_member_name":""}}], "member_genders":{{}}}}
-- "查询糖糖" → {{"records":[{{"action":"search", "member_name":"糖糖", "attribute_type":"basic_info", "content":"糖糖", "related_member_name":""}}], "member_genders":{{}}}}
-- "她还是跑步爱好者" → {{"records":[{{"action":"add", "member_name":"糖糖", "attribute_type":"hobby", "content":"跑步爱好者", "related_member_name":""}}], "member_genders":{{"糖糖":"女"}}}}
-- "他的职业是老师" → {{"records":[{{"action":"add", "member_name":"汪强", "attribute_type":"basic_info", "content":"职业是老师", "related_member_name":""}}], "member_genders":{{"汪强":"男"}}}}
-- "糖糖爱做饭，汪强不太会做饭" → [
-  {{"records":[{{"action":"add", "member_name":"糖糖", "attribute_type":"hobby", "content":"爱做饭", "related_member_name":""}}, {{"action":"add", "member_name":"汪强", "attribute_type":"ability", "content":"不太会做饭", "related_member_name":""}}], "member_genders":{{}}}}
-- "汪强不爱运动" → {{"records":[{{"action":"add", "member_name":"汪强", "attribute_type":"ability", "content":"不爱运动", "related_member_name":""}}], "member_genders":{{"汪强":"男"}}}}
-- "请问我们家谁最爱做饭？" → {{"records":[{{"action":"aggregate_search", "member_name":"", "attribute_type":"hobby", "content":"爱做饭", "related_member_name":""}}], "member_genders":{{}}}}
-- "请问我们家谁职业是老师？" → {{"records":[{{"action":"aggregate_search", "member_name":"", "attribute_type":"basic_info", "content":"职业是老师", "related_member_name":""}}], "member_genders":{{}}}}
-- "我们家几口人？" → {{"records":[{{"action":"count_family", "member_name":"", "attribute_type":"", "content":"", "related_member_name":""}}], "member_genders":{{}}}}
-- "请问我们一家几口人？" → {{"records":[{{"action":"count_family", "member_name":"", "attribute_type":"", "content":"", "related_member_name":""}}], "member_genders":{{}}}}
-- "糖糖是我" → {{"records":[{{"action":"self_identify", "member_name":"糖糖", "attribute_type":"", "content":"我是糖糖", "related_member_name":""}}], "member_genders":{{}}}}
-- "我才是糖糖" → {{"records":[{{"action":"self_identify", "member_name":"糖糖", "attribute_type":"", "content":"我才是糖糖", "related_member_name":""}}], "member_genders":{{}}}}
+{examples_section}
 """
 
     response = llm.invoke(prompt)
 
     # 代词列表，用于上下文关联
-    pronouns = ["她", "他", "它", "我的"]
+    pronouns = ["她", "他", "它", "我的", "我"]
     recent_members = state.get("recent_members", [])
     member_genders = dict(state.get("member_genders", {}))
 
@@ -179,7 +227,11 @@ attribute_type取值：
             parsed_records = result.get("records", [])
             llm_genders = result.get("member_genders", {})
             if llm_genders:
-                member_genders.update(llm_genders)
+                # 只添加新的性别信息，不覆盖已有的（已有的更可靠）
+                # 忽略空字符串（表示性别未知）
+                for name, gender in llm_genders.items():
+                    if gender and name not in member_genders:
+                        member_genders[name] = gender
         elif isinstance(result, list):
             # 旧格式（数组）：保持向后兼容
             parsed_records = result
@@ -243,11 +295,9 @@ attribute_type取值：
         if first_action == "unknown" and processed_records:
             first_action = processed_records[0].get("action", "unknown")
 
-        # 确保 member_name 不为空
+        # 确保 member_name 不为空（但 count_family 等类型 member_name 可以为空）
         if not first_member_name and processed_records:
             first_member_name = processed_records[0].get("member_name", "")
-        if not first_member_name:
-            first_action = "unknown"
 
         return {
             "action": first_action,
@@ -330,11 +380,100 @@ def add_info(state: FamilyAgentState) -> FamilyAgentState:
     添加信息节点：调用 add_family_info 工具
     支持单条或多条记录（从 records 字段获取）
     如果有 related_member_name，还需要为该成员创建基本记录
+    同时自动添加反向关系记录（双向存储）
     """
     results = []
 
     # 角色词列表（不创建新成员的词）
     role_words = ["主人", "管家", "老板", "领导", "老师", "同学", "朋友", "同事"]
+
+    # 根据成员性别决定反向关系
+    # 例如: content="儿子是XXX"，如果说话人是女性 → "妈妈是"，如果是男性 → "爸爸是"
+    GENDER_BASED_RELATIONSHIP = {
+        # 从父母视角（儿子/女儿）→ 反向是父母
+        "儿子": {"女": "妈妈", "男": "爸爸"},
+        "儿子是": {"女": "妈妈是", "男": "爸爸是"},
+        "女儿": {"女": "妈妈", "男": "爸爸"},
+        "女儿是": {"女": "妈妈是", "男": "爸爸是"},
+        # 从子女视角（妈妈/爸爸）→ 反向是子女
+        "妈妈": {"男": "儿子", "女": "女儿"},
+        "妈妈是": {"男": "儿子是", "女": "女儿是"},
+        "爸爸": {"男": "儿子", "女": "女儿"},
+        "爸爸是": {"男": "儿子是", "女": "女儿是"},
+        # 祖父母视角
+        "爷爷": {"男": "孙子", "女": "孙女"},
+        "爷爷是": {"男": "孙子是", "女": "孙女是"},
+        "奶奶": {"男": "孙子", "女": "孙女"},
+        "奶奶是": {"男": "孙子是", "女": "孙女是"},
+    }
+
+    # 固定反向关系映射（不依赖性别）
+    FIXED_REVERSE_MAPPING = {
+        # 配偶关系
+        "老公": "老婆",
+        "老公是": "老婆是",
+        "老婆": "老公",
+        "老婆是": "老公是",
+        "丈夫": "妻子",
+        "丈夫是": "妻子是",
+        "妻子": "丈夫",
+        "妻子是": "丈夫是",
+        # 兄弟姐妹关系
+        "哥哥": "弟弟",
+        "哥哥是": "弟弟是",
+        "弟弟": "哥哥",
+        "弟弟是": "哥哥是",
+        "姐姐": "妹妹",
+        "姐姐是": "妹妹是",
+        "妹妹": "姐姐",
+        "妹妹是": "姐姐是",
+        # 祖孙关系（从孙辈视角）
+        "孙子": "爷爷",
+        "孙女": "奶奶",
+        "外孙": "外公",
+        "外孙女": "外婆",
+        # 公婆关系
+        "公公": "儿媳",
+        "婆婆": "儿媳",
+        "岳父": "女婿",
+        "岳母": "女婿",
+    }
+
+    def get_reverse_relationship(content: str, member_name: str, related_member_name: str, member_genders: dict) -> str:
+        """
+        根据成员性别生成正确的反向关系
+
+        例如:
+        - content="妈妈是刘和足", member_name="汪强", related_member_name="刘和足"
+          → "儿子是汪强" (汪强是刘和足的儿子)
+        - content="儿子是汪强", member_name="刘和足", related_member_name="汪强"
+          → "妈妈是刘和足" (刘和足是汪强的妈妈)
+
+        逻辑：
+        1. 如果是 "妈妈是"/"爸爸是" → 反向是 "儿子是"/"女儿是"，需要用 member_name（孩子）的性别
+        2. 如果是 "儿子是"/"女儿是" → 反向是 "妈妈是"/"爸爸是"，需要用 member_name（父母）的性别
+        3. 否则使用固定映射
+        """
+        # 按长度降序排序，优先匹配更长的 key
+        all_keys = list(GENDER_BASED_RELATIONSHIP.keys()) + list(FIXED_REVERSE_MAPPING.keys())
+        sorted_keys = sorted(set(all_keys), key=len, reverse=True)
+
+        for key in sorted_keys:
+            if content.startswith(key):
+                # 检查是否是性别相关的映射
+                if key in GENDER_BASED_RELATIONSHIP:
+                    # 性别相关的映射：反向关系的角色取决于 member_name 的性别
+                    gender = member_genders.get(member_name, "")
+
+                    if gender in GENDER_BASED_RELATIONSHIP[key]:
+                        return GENDER_BASED_RELATIONSHIP[key][gender] + member_name
+                    else:
+                        # 如果不知道性别，优先使用男性
+                        return GENDER_BASED_RELATIONSHIP[key].get("男", GENDER_BASED_RELATIONSHIP[key]["女"]) + member_name
+                elif key in FIXED_REVERSE_MAPPING:
+                    return FIXED_REVERSE_MAPPING[key] + member_name
+
+        return None
 
     # 获取记录列表
     records = state.get("records", [])
@@ -346,6 +485,9 @@ def add_info(state: FamilyAgentState) -> FamilyAgentState:
             "content": state["content"],
             "related_member_name": state.get("related_member_name", "")
         }]
+
+    # 收集需要添加的反向关系
+    reverse_records = []
 
     # 处理每条记录
     for record in records:
@@ -385,6 +527,49 @@ def add_info(state: FamilyAgentState) -> FamilyAgentState:
                 results.append(result_related)
                 print(f"[add_info] 已自动创建新成员: {related_member}")
 
+            # 如果是 relationship 类型，生成反向关系记录
+            # 需要知道孩子的性别才能生成正确的反向关系
+            reverse_content = None
+            if attribute_type == "relationship" and related_member:
+                member_genders = state.get("member_genders", {})
+
+                # 确定谁是孩子：取决于关系类型
+                # "妈妈是"/"爸爸是" → member_name 是孩子
+                # "儿子是"/"女儿是" → related_member 是孩子
+                is_parent_child = content.startswith("妈妈") or content.startswith("爸爸")
+                child_name = member_name if is_parent_child else related_member
+                child_gender = member_genders.get(child_name, "")
+
+                # 如果不知道孩子的性别，跳过生成反向关系（避免错误的关系）
+                if not child_gender:
+                    print(f"[add_info] 不知道 {child_name} 的性别，跳过生成反向关系")
+                else:
+                    # 检查是否已经知道父母性别，避免生成错误的关系
+                    # 对于 "儿子是"/"女儿是"，需要知道父母的性别
+                    if not is_parent_child:
+                        # "儿子是"/"女儿是"：member_name 是父母，需要知道其性别
+                        parent_gender = member_genders.get(member_name, "")
+                        # 如果关系是 "儿子是" 但父母是女性，这是矛盾的，跳过
+                        if content.startswith("儿子是") and parent_gender == "女":
+                            print(f"[add_info] 关系矛盾：{content} 但 {member_name} 是女性，跳过生成反向关系")
+                        elif content.startswith("女儿是") and parent_gender == "男":
+                            print(f"[add_info] 关系矛盾：{content} 但 {member_name} 是男性，跳过生成反向关系")
+                        elif not parent_gender:
+                            print(f"[add_info] 不知道父母 {member_name} 的性别，跳过生成反向关系")
+                        else:
+                            reverse_content = get_reverse_relationship(content, member_name, related_member, member_genders)
+                    else:
+                        reverse_content = get_reverse_relationship(content, member_name, related_member, member_genders)
+
+                if reverse_content:
+                    reverse_records.append({
+                        "member_name": related_member,
+                        "attribute_type": "relationship",
+                        "content": reverse_content,
+                        "related_member_name": member_name
+                    })
+                    print(f"[add_info] 生成反向关系: {related_member}的{reverse_content}")
+
         # 添加主成员信息
         result = add_family_info._run(
             member_name=member_name,
@@ -392,6 +577,16 @@ def add_info(state: FamilyAgentState) -> FamilyAgentState:
             content=content
         )
         results.append(result)
+
+    # 添加反向关系记录
+    for reverse_record in reverse_records:
+        result = add_family_info._run(
+            member_name=reverse_record["member_name"],
+            attribute_type=reverse_record["attribute_type"],
+            content=reverse_record["content"]
+        )
+        results.append(result)
+        print(f"[add_info] 已添加反向关系: {reverse_record['member_name']} - {reverse_record['content']}")
 
     return {"tool_result": "\n".join(results)}
 
